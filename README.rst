@@ -28,14 +28,14 @@ Example usage
     def get_projects(cloud):
         "Yields projects, sorted by domain and project name"
         domains = cloud.get_domains()
-        for dom in sorted(domains, key=(lambda x: x.name)):
-            if dom.name == 'Default':
+        for domain in sorted(domains, key=(lambda x: x.name)):
+            if domain.name == 'Default':
                 # print('WARN: skipping domain Default (fixme?)')
                 continue
 
-            projects = dom.get_projects()
+            projects = domain.get_projects()
             for project in sorted(projects, key=(lambda x: x.name)):
-                project.domain = dom
+                project.domain = domain
                 yield project
 
 
@@ -46,6 +46,7 @@ Example usage
         except PermissionDenied:
             # We don't have permission to access the project? Upgrade the
             # permissions and try again.
+            cloud = project.cloud
             admin_role = cloud.get_role(name='admin')  # or 'reader'
             dom_admin_group = project.domain.get_admin_group()
 
