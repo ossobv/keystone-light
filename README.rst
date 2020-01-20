@@ -58,7 +58,7 @@ Example usage
                     role_id=admin_role.id))
             out = requests.put(
                 url, headers={'X-Auth-Token': str(cloud.get_system_token())})
-            assert out.status_code == 201, (out.status_code, out.text)
+            assert out.status_code in (201, 204), (out.status_code, out.text)
 
             # Try again. Should succeed if the cloud admin user is in the
             # dom_admin_group.
