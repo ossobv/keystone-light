@@ -8,7 +8,8 @@ from yaml import load
 
 
 class PermissionDenied(Exception):
-    pass
+    def __init__(self, method, url, status_code, response):
+        self.args = (method, url, status_code, response)
 
 
 class ObjectNotFound(Exception):
@@ -366,7 +367,8 @@ class Swift:
         out = requests.head(
             self.url, headers={'X-Auth-Token': str(project_token)})
         if out.status_code == 403:
-            raise PermissionDenied()  # we need to give ourselves permission
+            # "We" need to give ourselves permission, if possible.
+            raise PermissionDenied('HEAD', self.url, out.status_code, out.text)
         return out.headers
 
 
@@ -410,6 +412,8 @@ class CloudToken:
             headers['X-Auth-Token'] = str(unscoped_token)
 
         out = requests.post(url, json=post_data, headers=headers)
+        if out.status_code == 401:
+            raise PermissionDenied('POST', url, out.status_code, out.text)
         try:
             assert out.status_code == 201
             out_token = out.headers['X-Subject-Token']
