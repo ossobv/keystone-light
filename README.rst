@@ -38,6 +38,50 @@ Example usage
                 project.domain = domain
                 yield project
 
+    def _give_us_project_perms_through_admin_group(project):
+        """
+        Make sure we are in the *-admin group. Make sure the *-admin
+        group has permissions on the project.
+        """
+        cloud = project.cloud
+        dom_admin_group = project.domain.get_admin_group()
+
+        # First check if we're member of the group at all.
+        token = cloud.get_system_token()
+        auth_headers = {'X-Auth-Token': str(token)}
+        try:
+            # FIXME: Undocumented access to system_token!
+            user_id = token.data['user']['id']
+            assert user_id and isinstance(user_id, str), user_id
+        except KeyError:
+            raise ValueError('missing user.id?', token.data)
+
+        # Are we in the *-admin group?
+        url = urljoin(
+            cloud.base_url,
+            '/v3/groups/{group_id}/users/{user_id}'.format(
+                group_id=dom_admin_group.id, user_id=user_id))
+        out = requests.head(url, headers=auth_headers)
+        if out.status_code == 404:
+            # Add us to the group.
+            out = requests.put(url, headers=auth_headers)
+            assert out.status_code == 204, (
+                'PUT', url, out.status_code, out.text)
+            # Double check.
+            out = requests.head(url, headers=auth_headers)
+        assert out.status_code == 204, (
+            'HEAD', url, out.status_code, out.text)
+
+        # Grant *-admin power to the project.
+        admin_role = cloud.get_role(name='admin')  # or 'reader'
+        url = urljoin(
+            cloud.base_url,
+            '/v3/projects/{project_id}/groups/{group_id}/roles/{role_id}'.format(
+                project_id=project.id, group_id=dom_admin_group.id,
+                role_id=admin_role.id))
+        out = requests.put(url, headers=auth_headers)
+        assert out.status_code in (201, 204), (
+            'PUT', url, out.status_code, out.text)
 
     def get_swift_stat_ensuring_permissions(project):
         "Get Swift v1 stat on a project (previously: tenant)"
@@ -46,25 +90,20 @@ Example usage
         except PermissionDenied:
             # We don't have permission to access the project? Upgrade the
             # permissions and try again.
-            cloud = project.cloud
-            admin_role = cloud.get_role(name='admin')  # or 'reader'
-            dom_admin_group = project.domain.get_admin_group()
+            _give_us_project_perms_through_admin_group(project)
+        else:
+            return stat
 
-            url = urljoin(
-                cloud.base_url,
-                ('/v3/projects/{project_id}/groups/{group_id}/'
-                 'roles/{role_id}').format(
-                    project_id=project.id, group_id=dom_admin_group.id,
-                    role_id=admin_role.id))
-            out = requests.put(
-                url, headers={'X-Auth-Token': str(cloud.get_system_token())})
-            assert out.status_code in (201, 204), (out.status_code, out.text)
-
-            # Try again. Should succeed if the cloud admin user is in the
-            # dom_admin_group.
+        # Try again. Should succeed now, with the added permissions.
+        try:
             stat = project.get_swift().get_stat()
-
-        return stat
+        except PermissionDenied as e:
+            raise MyPermissionDenied(
+                'EPERM on {domain}.{project}: {exc} {exc_args}'.format(
+                    domain=project.domain.name, project=project.name,
+                    exc=e.__class__.__name__, exc_args=e.args)) from e
+        else:
+            return stat
 
 
     # Take config from ~/.config/openstack/clouds.yaml and select
