@@ -556,6 +556,17 @@ class SwiftContainer:
         #    "last_modified": "2020-05-16T15:58:02.489890"}]
         return out.json()
 
+    def delete(self, name):
+        url, hdrs = self._mkurl(name), self.swift._mkhdrs()
+        out = requests.delete(url, headers=hdrs)
+        if out.status_code == 404:
+            raise SwiftFileNotFoundError(
+                filename=name,
+                strerror='GET {} {}'.format(url, out.status_code))
+        if out.status_code != 204:
+            raise PermissionDenied('DELETE', url, out.status_code, out.text)
+        assert out.content == b'', out.content
+
     def get(self, name):
         """
         Usage::
