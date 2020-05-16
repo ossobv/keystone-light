@@ -130,4 +130,27 @@ Example output
     ...
 
 
+Swift Example usage
+-------------------
+
+.. code-block:: python
+
+    from keystone_light import Cloud, DirectConfig
+
+    KEYSTONE_URL = 'https://<DOMAIN>:<USER>:<PASS>@KEYSTONE'
+    SWIFT_PROJECT = '<DOMAIN>:<PROJECT>'
+    SWIFT_CONTAINER = 'some-container'
+
+    config = DirectConfig(KEYSTONE_URI)
+    project = Cloud(config).get_current_project()
+    assert project.get_fullname() == SWIFT_PROJECT, project.get_fullname()
+
+    swift = project.get_swift()
+    container = swift.get_container(SWIFT_CONTAINER)
+    out = container.get('changelog.txt')
+    with open('changelog.txt', 'wb') as fp:
+        for chunk in out.iter_content(chunk_size=8192):
+            fp.write(chunk)
+
+
 .. _`OpenStack Identity API v3`: https://docs.openstack.org/api-ref/identity/v3/

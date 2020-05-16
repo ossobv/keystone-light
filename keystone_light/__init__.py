@@ -1,7 +1,7 @@
 import os
 from collections import defaultdict
 from itertools import chain
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from yaml import load
@@ -18,6 +18,26 @@ class ObjectNotFound(Exception):
 
 class MultipleObjectsFound(Exception):
     pass
+
+
+class SwiftFileExistsError(FileExistsError):
+    def __init__(self, filename, strerror):
+        EEXIST = 17
+        super().__init__(EEXIST, filename)
+        self._strerror = strerror
+
+    def __str__(self):
+        return self._strerror
+
+
+class SwiftFileNotFoundError(FileNotFoundError):
+    def __init__(self, filename, strerror):
+        ENOENT = 2
+        super().__init__(ENOENT, filename)
+        self._strerror = strerror
+
+    def __str__(self):
+        return self._strerror
 
 
 def the_one_entry(list_, type_, params):
@@ -77,6 +97,36 @@ class CloudConfig:
         return str(self.user_info)
 
 
+class DirectConfig:
+    """
+    Direct config, by passing https://<DOMAIN>:<USER>:<PASS>@KEYSTONE
+    """
+    def __init__(self, auth_url):
+        parts = urlsplit(auth_url)
+        self._auth_url = urlunsplit((
+            parts.scheme,
+            ('{}:{}'.format(parts.hostname, parts.port) if parts.port
+             else parts.hostname),
+            parts.path, parts.query, parts.fragment))
+
+        domain, password = parts.username, parts.password
+        assert ':' not in domain, domain
+        assert ':' in password, 'expected <domain>:<user>:<pass>'
+        self._user_domain_name = domain
+        self._username, self._password = password.split(':', 1)
+
+    def get_auth_url(self):
+        return self._auth_url
+
+    def as_user_password(self):
+        password = {'user': {
+            'name': self._username,
+            'domain': {'name': self._user_domain_name},
+            'password': self._password,
+        }}
+        return password
+
+
 class Cloud:
     def __init__(self, cloud_config):
         self.base_url = cloud_config.get_auth_url()
@@ -86,6 +136,8 @@ class Cloud:
         self._domain_tokens = {}
         self._project_tokens = {}
         self._endpoints = {}
+
+        self._domains = {}
 
     def get_roles(self):
         if not hasattr(self, '_get_roles'):
@@ -105,17 +157,38 @@ class Cloud:
         return the_one_entry(roles, 'role', dict(name=name))
 
     def get_domains(self):
+        """
+        Get domains from SYSTEM scope
+        """
         if not hasattr(self, '_get_domains'):
             system_token = self.get_system_token()
             url = urljoin(self.base_url, '/v3/domains')
             out = requests.get(
                 url=url, headers={'X-Auth-Token': str(system_token)})
-            self._get_domains = [
-                Domain.from_keystone(i, cloud=self)
-                for i in out.json()['domains']]
+
+            for data in out.json()['domains']:
+                if data['id'] not in self._domains:
+                    self._domains[data['id']] = Domain.from_keystone(
+                        data, cloud=self)
+
+            self._get_domains = self._domains.values()
         return self._get_domains
 
     def get_domain(self, name=None, domain_id=None):
+        """
+        Get domains by name or id
+        """
+        # If we have it in cache, return immediately, or create one if
+        # we have all the values.
+        if domain_id in self._domains:
+            return self._domains[domain_id]
+        if name and domain_id:
+            ret = Domain(name=name, id=domain_id, enabled=True)
+            ret.cloud = self
+            self._domains[domain_id] = ret
+            return ret
+
+        # Otherwise, fetch the SYSTEM domains and filter by args.
         domains = self.get_domains()
         if name is not None:
             domains = [i for i in domains if i.name == name]
@@ -152,6 +225,9 @@ class Cloud:
             groups, 'group', dict(name=name, domain_id=domain_id))
 
     def get_projects(self, domain_id=None):
+        """
+        Get projects from SYSTEM scope
+        """
         if not hasattr(self, '_get_projects'):
             system_token = self.get_system_token()
             url = urljoin(self.base_url, '/v3/projects')
@@ -168,6 +244,30 @@ class Cloud:
         if domain_id:
             return self._get_projects[domain_id]
         return list(chain(*self._get_projects.values()))
+
+    def get_current_project(self):
+        """
+        Get CURRENT project that belongs to this user
+        """
+        if not hasattr(self, '_get_current_project'):
+            # We expect this in the unscoped_token.data:
+            #   "project": {
+            #     "name": "x", "domain": {"name": "x", "id": "abc123"},
+            #     "id": "abc123"}
+            data = self.get_unscoped_token().data
+            keystone_dict = {
+                'id': data['project']['id'],
+                'name': data['project']['name'],
+                'enabled': True,
+                'is_domain': data['is_domain'],  # not on project...?
+                'domain_id': data['project']['domain']['id'],
+            }
+            self.get_domain(  # the get_domain() creates on in cache
+                name=data['project']['domain']['name'],
+                domain_id=data['project']['domain']['id'])
+            project = Project.from_keystone(keystone_dict, cloud=self)
+            self._get_current_project = project
+        return self._get_current_project
 
     def get_unscoped_token(self):
         if not self._unscoped_token:
@@ -333,6 +433,12 @@ class Project:
     def __repr__(self):
         return '<Project({})>'.format(self.name)
 
+    def get_fullname(self):
+        return '{}:{}'.format(self.get_domain().name, self.name)
+
+    def get_domain(self):
+        return self.cloud.get_domain(domain_id=self.domain_id)
+
     def get_swift(self):
         key = ('object-store', 'swift', 'project', self.id)
         # Getting the project token ensures we get the endpoint in the
@@ -362,14 +468,138 @@ class Swift:
         self.url = url
         self.region = region
 
-    def get_stat(self):
+    def _mkurl(self, *args):
+        if args:
+            return '{}/{}'.format(self.url, '/'.join(args))
+        return self.url
+
+    def _mkhdrs(self, json=False):
         project_token = self.cloud.get_project_token(self.project_id)
-        out = requests.head(
-            self.url, headers={'X-Auth-Token': str(project_token)})
+        headers = {'X-Auth-Token': str(project_token)}
+        if json:
+            # text/plain, application/json, application/xml, text/xml
+            headers['Accept'] = 'application/json'
+        return headers
+
+    def get_stat(self):
+        url, hdrs = self._mkurl(), self._mkhdrs()
+        out = requests.head(url, headers=hdrs)
         if out.status_code == 403:
             # "We" need to give ourselves permission, if possible.
-            raise PermissionDenied('HEAD', self.url, out.status_code, out.text)
+            raise PermissionDenied('HEAD', url, out.status_code, out.text)
         return out.headers
+
+    def get_containers(self):
+        url, hdrs = self._mkurl(), self._mkhdrs(json=True)
+        out = requests.get(url, headers=hdrs)
+        if out.status_code != 200:
+            raise PermissionDenied('GET', url, out.status_code, out.text)
+        # headers = {
+        #   "Server": "nginx/x.x (Ubuntu)",
+        #   "Date": "Sat, 16 May 2020 14:57:27 GMT",
+        #   "Content-Type": "application/json; charset=utf-8",
+        #   "Content-Length": "2",
+        #   "X-Account-Container-Count": "0",
+        #   "X-Account-Object-Count": "0",
+        #   "X-Account-Bytes-Used": "0",
+        #   "X-Timestamp": "1589641047.63424",
+        #   "X-Put-Timestamp": "1589641047.63424",
+        #   "X-Trans-Id": "tx97..",
+        #   "X-Openstack-Request-Id": "tx97.."}
+        # out.json() = {
+        #   {"name": "logbunny-test", "count": 0, "bytes": 0,
+        #    "last_modified": "2020-05-16T15:02:03.684680"}
+        return [SwiftContainer.from_list(i, swift=self) for i in out.json()]
+
+    def get_container(self, name):
+        ret = SwiftContainer(name=name)
+        ret.swift = self
+        return ret
+
+
+class SwiftContainer:
+    @classmethod
+    def from_list(cls, data, swift):
+        # data = {"name": "logbunny-test", "count": 0, "bytes": 0,
+        #         "last_modified": "2020-05-16T15:02:03.684680"}
+        ret = cls(name=data['name'])
+        ret.swift = swift
+        return ret
+
+    def __init__(self, name):
+        self.name = name
+
+    def _mkurl(self, *args):
+        return self.swift._mkurl(self.name, *args)
+
+    def list(self):
+        url, hdrs = self._mkurl(), self.swift._mkhdrs(json=True)
+        out = requests.get(url, headers=hdrs)
+        if out.status_code != 200:
+            raise PermissionDenied('GET', url, out.status_code, out.text)
+        # headers = {
+        #   "Server": "nginx/x.x (Ubuntu)",
+        #   "Date": "Sat, 16 May 2020 15:20:45 GMT",
+        #   "Content-Type": "application/json; charset=utf-8",
+        #   "Content-Length": "2",
+        #   "X-Container-Object-Count": "0",
+        #   "X-Container-Bytes-Used": "0",
+        #   "X-Timestamp": "1589641323.69412",
+        #   "Last-Modified": "Sat, 16 May 2020 15:02:04 GMT",
+        #   "Accept-Ranges": "bytes",
+        #   "X-Storage-Policy": "policy0",
+        #   "X-Trans-Id": "txe3a...",
+        #   "X-Openstack-Request-Id": "txe3a..."}
+        # out.json() = [
+        #   {"bytes": 432, "hash": "5a..",
+        #    "name": "README.rst", "content_type": "application/octet-stream",
+        #    "last_modified": "2020-05-16T15:58:02.489890"}]
+        return out.json()
+
+    def get(self, name):
+        """
+        Usage::
+
+            out = container.get(filename)
+            with open(filename, 'wb') as fp:
+                for chunk in out.iter_content(chunk_size=8192):
+                    fp.write(chunk)
+        """
+        url, hdrs = self._mkurl(name), self.swift._mkhdrs()
+        out = requests.get(url, headers=hdrs)
+        if out.status_code == 404:
+            raise SwiftFileNotFoundError(
+                filename=name,
+                strerror='GET {} {}'.format(url, out.status_code))
+        if out.status_code != 200:
+            raise PermissionDenied('GET', url, out.status_code, out.text)
+        return out
+
+    def put(self, name, fp, content_type='application/octet-stream'):
+        """
+        TODO: should we do a pre and post HEAD check, or too much overhead?
+        """
+        url, hdrs = self._mkurl(name), self.swift._mkhdrs()
+        hdrs['Content-Type'] = content_type
+
+        out = requests.head(url, headers=hdrs)
+        if out.status_code != 404:
+            raise SwiftFileExistsError(
+                filename=name,
+                strerror='HEAD before PUT {} {}'.format(url, out.status_code))
+        assert out.content == b'', out.content
+
+        out = requests.put(url, headers=hdrs, data=fp)
+        if out.status_code != 201:
+            raise PermissionDenied('PUT', url, out.status_code, out.text)
+        assert out.content == b'', out.content
+
+        out = requests.head(url, headers=hdrs)
+        if out.status_code != 200:
+            raise SwiftFileNotFoundError(
+                filename=name,
+                strerror='HEAD after PUT {} {}'.format(url, out.status_code))
+        assert out.content == b'', out.content
 
 
 class CloudToken:
@@ -422,7 +652,7 @@ class CloudToken:
             # FIXME: auth leak to stdout in case of errors
             print(out)
             print(out.headers)
-            print(out.text)
+            print(out.content)
             raise
 
         self.base_url = base_url
