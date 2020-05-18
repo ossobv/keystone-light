@@ -174,5 +174,22 @@ Swift Example usage
             assert buf == buf2
         assert buf == buf2
 
+And an example with timing:
+
+.. code-block:: python
+
+    from timeit import timeit
+
+    # ...
+
+    # Download file:
+    filename2 = '{}.retrieved'.format(filename)
+    def _get():
+        with container.get(filename) as response, \
+                open(filename2, 'wb') as fp:
+            for chunk in response.iter_content(chunk_size=8192):
+                fp.write(chunk)
+    print('{:7.3f} GET'.format(timeit(number=1, stmt=_get)))
+
 
 .. _`OpenStack Identity API v3`: https://docs.openstack.org/api-ref/identity/v3/
