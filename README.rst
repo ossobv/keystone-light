@@ -155,6 +155,8 @@ Swift Example usage
             container.delete(filename)
         except FileNotFoundError:
             pass
+        # TIP: Use ChunkIteratorIOBaseWrapper(fp) if the input file
+        # is a pipe/stream.
         container.put(filename, fp)
 
     # Download file:

@@ -709,6 +709,11 @@ class SwiftContainer:
         """
         PUT (write) remote Swift file
 
+        BEWARE: if you're uploading from a file of unknown size (a
+        pipe/stream), you may want to wrap the fp in a
+        ChunkIteratorIOBaseWrapper: instead of iterating over lines,
+        it will iterate over chunks of data.
+
         NOTE: Right now, we do a:
         - HEAD check before PUT (to ensure we do not overwrite), and a
         - HEAD check after PUT (to ensure the file was written).
@@ -736,3 +741,51 @@ class SwiftContainer:
                 filename=name,
                 strerror='HEAD after PUT {} {}'.format(url, out.status_code))
         assert out.content == b'', out.content
+
+
+# ======================================================================
+# Request helpers
+# ======================================================================
+
+
+class ChunkIteratorIOBaseWrapper:
+    """
+    Wrapper around python file objects with a chunked iterator
+
+    Regular file objects (IOBase) have a readline() iterator. This
+    wrapper changes the iterator to provide appropriately sized chunks
+    instead.
+
+    When an input file size is not known beforehand (for streamed IO),
+    the requests http library will iterate over the input file. This
+    wrapper makes it a lot more efficient.
+
+    Usage:
+
+        infp = sys.stdin.buffer  # let input be a pipe, instead of a file
+
+        # Slow: as infp is iterated over using readlines()
+        requests.put('https://path/to/somewhere', data=infp)
+
+        # Fast: as we get decent sized chunks
+        requests.put('https://path/to/somewhere', data=(
+            ChunkIteratorIOBaseWrapper(infp))
+    """
+    BUFSIZ = 256 * 1024
+
+    def __init__(self, fp):
+        self.__fp = fp
+
+    def __iter__(self):
+        # TODO: check for closed file?
+        return self
+
+    def __next__(self):
+        buf = self.__fp.read(self.BUFSIZ)
+        if buf == b'':
+            raise StopIteration()
+        return buf
+
+    def __getattr__(self, attr):
+        "Get property/method from self.__fp instead"
+        return getattr(self.__fp, attr)
