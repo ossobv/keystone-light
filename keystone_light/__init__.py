@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import warnings
 
 from contextlib import contextmanager
@@ -920,7 +921,7 @@ class SwiftContainerGetPipe(FuncPipe):
 
     Usage:
 
-        with ContainerGetPipe(container, sys.argv[2]) as pipe1, (
+        with SwiftContainerGetPipe(container, remote_name) as pipe1, (
                 subprocess.Popen(
                     ["md5sum"], stdin=pipe1.stdout,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)) as pipe2:
@@ -943,3 +944,32 @@ class SwiftContainerGetPipe(FuncPipe):
     def __exit__(self, type, value, traceback):
         self._response.__exit__(type, value, traceback)
         super().__exit__(type, value, traceback)
+
+
+@contextmanager
+def TemporaryUntilClosedFile(filename, mode='wb'):
+    """
+    NamedTemporaryFile replacement that renames if there is no exception
+
+    If there is an exception inside the context handler, the temporary file is
+    deleted. If there is _no_ exception, the temporary file is renamed to the
+    target filename.
+
+    Usage:
+
+        with TemporaryUntilClosedFile(local_name) as outfp, \\
+                SwiftContainerGetPipe(
+                    container, remote_name, outfp) as source:
+            source.communicate()
+    """
+    # Use dir=directory-of-the-file, so we won't have issues with
+    # cross-filesystem-moves.
+    ret = tempfile.NamedTemporaryFile(
+        mode=mode, dir=os.path.dirname(filename), delete=False)
+    try:
+        yield ret
+    except Exception:
+        os.unlink(ret.name)
+        raise
+    else:
+        os.rename(ret.name, filename)
