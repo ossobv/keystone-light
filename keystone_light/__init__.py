@@ -1,6 +1,7 @@
 import os
 import warnings
 
+from contextlib import contextmanager
 from collections import defaultdict
 from itertools import chain
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -623,6 +624,23 @@ class SwiftContainer:
         return self.swift._mkurl(self.name, *args)
 
     def list(self):
+        """
+        List all files in the container; returns a list of dicts
+
+        NOTE: This interface will change in the future, as we'll want
+        filtering capabilities.
+
+        Example return value:
+
+            [
+                {"bytes": 432,
+                 "content_type": "application/octet-stream",
+                 "hash": "<md5-hash>",
+                 "last_modified": "2020-05-16T15:58:02.489890",
+                 "name": "README.rst"},
+                ...
+            ]
+        """
         url, hdrs = self._mkurl(), self.swift._mkhdrs(json=True)
         out = requests.get(url, headers=hdrs)
         if out.status_code != 200:
@@ -647,6 +665,9 @@ class SwiftContainer:
         return out.json()
 
     def delete(self, name):
+        """
+        DELETE (remeve) remote Swift file
+        """
         url, hdrs = self._mkurl(name), self.swift._mkhdrs()
         out = requests.delete(url, headers=hdrs)
         if out.status_code == 404:
@@ -657,14 +678,19 @@ class SwiftContainer:
             raise PermissionDenied('DELETE', url, out.status_code, out.text)
         assert out.content == b'', out.content
 
+    @contextmanager
     def get(self, name):
         """
-        Usage::
+        GET (read) remote Swift file, returns a requests.Response object
 
-            out = container.get(filename)
-            with open(filename, 'wb') as fp:
-                for chunk in out.iter_content(chunk_size=8192):
-                    fp.write(chunk)
+        Example usage:
+
+            with container.get(filename) as response, \
+                    open(local_filename, 'wb') as fp:
+                for chunk in response.iter_content(chunk_size=8192):
+                     fp.write(chunk)
+
+        See: https://requests.readthedocs.io/en/master/api/#requests.Response
         """
         url, hdrs = self._mkurl(name), self.swift._mkhdrs()
         out = requests.get(url, headers=hdrs)
@@ -674,11 +700,20 @@ class SwiftContainer:
                 strerror='GET {} {}'.format(url, out.status_code))
         if out.status_code != 200:
             raise PermissionDenied('GET', url, out.status_code, out.text)
-        return out
+        try:
+            yield out
+        finally:
+            out.close()
 
     def put(self, name, fp, content_type='application/octet-stream'):
         """
-        TODO: should we do a pre and post HEAD check, or too much overhead?
+        PUT (write) remote Swift file
+
+        NOTE: Right now, we do a:
+        - HEAD check before PUT (to ensure we do not overwrite), and a
+        - HEAD check after PUT (to ensure the file was written).
+        This may prove to be more overhead than we want, so this might
+        change in the future.
         """
         url, hdrs = self._mkurl(name), self.swift._mkhdrs()
         hdrs['Content-Type'] = content_type

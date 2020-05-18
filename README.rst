@@ -147,10 +147,32 @@ Swift Example usage
 
     swift = project.get_swift()
     container = swift.get_container(SWIFT_CONTAINER)
-    out = container.get('changelog.txt')
-    with open('changelog.txt', 'wb') as fp:
-        for chunk in out.iter_content(chunk_size=8192):
+
+    # (Re-)upload file:
+    filename = ('bloblet.bin' if False else 'blobzilla.bin')
+    with open(filename, 'rb') as fp:
+        try:
+            container.delete(filename)
+        except FileNotFoundError:
+            pass
+        container.put(filename, fp)
+
+    # Download file:
+    filename2 = '{}.retrieved'.format(filename)
+    with container.get(filename) as response, \
+            open(filename2, 'wb') as fp:
+        for chunk in response.iter_content(chunk_size=8192):
             fp.write(chunk)
+
+    # Check and compare:
+    with open(filename, 'rb') as fp, \
+            open(filename2, 'rb') as fp2:
+        buf = buf2 = True
+        while buf and buf2:
+            buf = fp.read(8192)
+            buf2 = fp2.read(8192)
+            assert buf == buf2
+        assert buf == buf2
 
 
 .. _`OpenStack Identity API v3`: https://docs.openstack.org/api-ref/identity/v3/
