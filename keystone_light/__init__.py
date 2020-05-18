@@ -1,4 +1,5 @@
 import os
+import sys
 import warnings
 
 from contextlib import contextmanager
@@ -789,3 +790,109 @@ class ChunkIteratorIOBaseWrapper:
     def __getattr__(self, attr):
         "Get property/method from self.__fp instead"
         return getattr(self.__fp, attr)
+
+
+class FuncOpen:
+    """
+    Popen "compatible" subprocess handler to be used in Popen-chains
+
+    Because reading a HTTP stream takes userland code (we cannot
+    simply read() from the socket), we spawn a subprocess to read and
+    write to an anonymous pipe.
+
+    The other end of the pipe can then be read() as usual.
+
+    Usage:
+
+        def data_get_func(dstfp):
+            "Closure, to call container.get(name) and write to dstfp"
+            with container.get(name) as response:
+                for chunk in response.iter_content(chunk_size=8192):
+                    dstfp.write(chunk)
+
+        # Example that loads data from a Swift container and feeds it to
+        # md5sum directly:
+        with FuncOpen(data_get_func) as pipe1, (
+                subprocess.Popen(
+                    ["md5sum"], stdin=pipe1.stdout,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)) as pipe2:
+            md5out, err = pipe2.communicate()
+            assert pipe2.wait() == 0 and err == b''
+            void, err = pipe1.communicate()
+            assert pipe1.wait() == 0 and void == b'' and err == b'', (
+                pipe1.returncode, void, err)
+
+        print(md5out)  # b'<md5hash>  -<LF>'
+    """
+    def __init__(self, function, stdout=None):
+        if stdout is None:
+            # Our pipe, our responsibility to clean up the fd.
+            c2pread, c2pwrite = os.pipe()
+        else:
+            # Someone elses responsibility.
+            c2pread, c2pwrite = None, stdout.fileno()
+        errread, errwrite = os.pipe()
+
+        pid = os.fork()
+        if not pid:
+            # This is the child
+            handled_fds = (None, c2pread, c2pwrite)
+            os.close(errread)
+            if c2pread is not None:
+                os.close(c2pread)
+            if sys.stdin and sys.stdin.fileno() not in handled_fds:
+                sys.stdin.close()
+            if sys.stdout and sys.stdout.fileno() not in handled_fds:
+                sys.stdout.close()
+            if sys.stderr.fileno() is not None:
+                os.dup2(errwrite, sys.stderr.fileno())
+            try:
+                with os.fdopen(c2pwrite, 'wb') as dstfp:
+                    function(dstfp)
+            finally:
+                try:
+                    os.close(errwrite)
+                except Exception:
+                    pass
+            os._exit(0)
+
+        self.pid = pid
+        self.returncode = None
+        self._using_pipe = (c2pread is not None)
+
+        if self._using_pipe:
+            os.close(c2pwrite)
+            self.stdout = os.fdopen(c2pread, 'rb')
+
+        os.close(errwrite)
+        self._stderr = errread
+
+    def communicate(self):
+        # Behave as much as regular Popen as possible. Note that we
+        # don't cope with large amounts of stderr while stdout is still
+        # (supposed) to be flowing.
+        out = b''
+        with os.fdopen(self._stderr, 'rb') as fp:
+            err = fp.read()
+        self._stderr = None
+        self.wait()
+        return out, err
+
+    def wait(self):
+        if self.returncode is None:
+            pid, returncode = os.waitpid(self.pid, 0)
+            self.returncode = returncode
+
+        if self._stderr is not None:
+            os.close(self._stderr)
+            self._stderr = None
+
+        return self.returncode
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        if self._using_pipe:
+            self.stdout.close()
+        self.wait()
