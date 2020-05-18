@@ -822,7 +822,7 @@ class FuncOpen:
             assert pipe1.wait() == 0 and void == b'' and err == b'', (
                 pipe1.returncode, void, err)
 
-        print(md5out)  # b'<md5hash>  -<LF>'
+        print(md5out)  # b'<md5-hash>  -<LF>'
     """
     def __init__(self, function, stdout=None):
         if stdout is None:
@@ -896,3 +896,50 @@ class FuncOpen:
         if self._using_pipe:
             self.stdout.close()
         self.wait()
+
+
+class FuncPipe(FuncOpen):
+    """
+    FuncOpen as a Pipe where we assert that there was no failure
+    """
+    def communicate(self):
+        out, err = super().communicate()
+        assert out in (b'', None), out
+        if self.returncode != 0:
+            from subprocess import CalledProcessError
+            print('(stderr)', err.decode('ascii', 'replace'), file=sys.stderr)
+            raise CalledProcessError(
+                cmd='{} (FuncPipe child)'.format(sys.argv[0]), output=err,
+                returncode=self.returncode)
+        return (None, err)
+
+
+class SwiftContainerGetPipe(FuncPipe):
+    """
+    Get data from a container in a subprocess: self.stdout iterates the data
+
+    Usage:
+
+        with ContainerGetPipe(container, sys.argv[2]) as pipe1, (
+                subprocess.Popen(
+                    ["md5sum"], stdin=pipe1.stdout,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)) as pipe2:
+            md5out, err = pipe2.communicate()
+            pipe1.communicate()
+        print(md5out)  # b'<md5-hash>  -<LF>'
+    """
+    def __init__(self, container, filename, stdout=None):
+        # Call generator enter manually and immediately: any 403/404
+        # will get picked up now.
+        self._response = response = container.get(filename).__enter__()
+
+        # The container data fetch gets to be done in the subprocess.
+        def getter(dstfp):
+            for chunk in response.iter_content(chunk_size=8192):
+                dstfp.write(chunk)
+
+        super().__init__(function=getter, stdout=stdout)
+
+    def __exit__(self, type, value, traceback):
+        self._response.__exit__(type, value, traceback)
+        super().__exit__(type, value, traceback)
