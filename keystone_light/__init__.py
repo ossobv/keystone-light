@@ -1,10 +1,20 @@
 import os
+import warnings
+
 from collections import defaultdict
 from itertools import chain
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from yaml import load
+
+
+# ======================================================================
+# OpenStack Keystone
+# ----------------------------------------------------------------------
+# cloud = Cloud(CloudsYamlConfig('cloudX'))  # or:
+# cloud = Cloud(DirectConfig('https://domain:user:pass@...'))
+# ======================================================================
 
 
 class PermissionDenied(Exception):
@@ -20,26 +30,6 @@ class MultipleObjectsFound(Exception):
     pass
 
 
-class SwiftFileExistsError(FileExistsError):
-    def __init__(self, filename, strerror):
-        EEXIST = 17
-        super().__init__(EEXIST, filename)
-        self._strerror = strerror
-
-    def __str__(self):
-        return self._strerror
-
-
-class SwiftFileNotFoundError(FileNotFoundError):
-    def __init__(self, filename, strerror):
-        ENOENT = 2
-        super().__init__(ENOENT, filename)
-        self._strerror = strerror
-
-    def __str__(self):
-        return self._strerror
-
-
 def the_one_entry(list_, type_, params):
     if not list_:
         raise ObjectNotFound(
@@ -52,9 +42,9 @@ def the_one_entry(list_, type_, params):
     return list_[0]
 
 
-class CloudConfig:
+class CloudsYamlConfig:
     """
-    Reads ~/.config/openstack/clouds.yaml and selects one.
+    Reads ~/.config/openstack/clouds.yaml and selects one
 
     Example file contents::
 
@@ -97,6 +87,17 @@ class CloudConfig:
         return str(self.user_info)
 
 
+class CloudConfig(CloudsYamlConfig):
+    """
+    Old name for CloudsYamlConfig
+    """
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            'CloudConfig is deprecated, please use CloudsYamlConfig',
+            DeprecationWarning, stacklevel=2)
+        super().__init__(*args, **kwargs)
+
+
 class DirectConfig:
     """
     Direct config, by passing https://<DOMAIN>:<USER>:<PASS>@KEYSTONE
@@ -125,6 +126,68 @@ class DirectConfig:
             'password': self._password,
         }}
         return password
+
+
+class CloudToken:
+    def __init__(self, unscoped_token=None, cloud_config=None, scope=None):
+        if unscoped_token:
+            assert not cloud_config
+            base_url = unscoped_token.base_url
+            post_data = {
+                'auth': {
+                    'identity': {
+                        'methods': ['token'],
+                        'token': {
+                            'id': str(unscoped_token),
+                        },
+                    },
+                },
+            }
+        elif cloud_config:
+            assert not unscoped_token
+            base_url = cloud_config.get_auth_url()
+            post_data = {
+                'auth': {
+                    'identity': {
+                        'methods': ['password'],
+                        'password': cloud_config.as_user_password(),
+                    },
+                },
+            }
+        else:
+            raise TypeError('expect unscoped_token OR cloud_config')
+
+        if scope:
+            post_data['auth']['scope'] = scope
+
+        # Optional "?nocatalog", but then we won't get the catalog,
+        # which we need for project endpoints.
+        url = urljoin(base_url, '/v3/auth/tokens')
+        headers = {}
+        if unscoped_token:
+            headers['X-Auth-Token'] = str(unscoped_token)
+
+        out = requests.post(url, json=post_data, headers=headers)
+        if out.status_code == 401:
+            raise PermissionDenied('POST', url, out.status_code, out.text)
+        try:
+            assert out.status_code == 201
+            out_token = out.headers['X-Subject-Token']
+            out_data = out.json()
+        except (AssertionError, KeyError):
+            # FIXME: auth leak to stdout in case of errors
+            print(out)
+            print(out.headers)
+            print(out.content)
+            raise
+
+        self.base_url = base_url
+        self.data = out_data.pop('token')
+        assert not out_data, out_data
+        self.token = out_token
+
+    def __str__(self):
+        return self.token
 
 
 class Cloud:
@@ -453,6 +516,33 @@ class Project:
             endpoint, project_id=self.id, cloud=self.cloud)
 
 
+# ======================================================================
+# OpenStack Swift
+# ----------------------------------------------------------------------
+# swift = cloud.get....project().get_swift()
+# ======================================================================
+
+
+class SwiftFileExistsError(FileExistsError):
+    def __init__(self, filename, strerror):
+        EEXIST = 17
+        super().__init__(EEXIST, filename)
+        self._strerror = strerror
+
+    def __str__(self):
+        return self._strerror
+
+
+class SwiftFileNotFoundError(FileNotFoundError):
+    def __init__(self, filename, strerror):
+        ENOENT = 2
+        super().__init__(ENOENT, filename)
+        self._strerror = strerror
+
+    def __str__(self):
+        return self._strerror
+
+
 class Swift:
     @classmethod
     def from_keystone(cls, data, project_id, cloud):
@@ -562,7 +652,7 @@ class SwiftContainer:
         if out.status_code == 404:
             raise SwiftFileNotFoundError(
                 filename=name,
-                strerror='GET {} {}'.format(url, out.status_code))
+                strerror='DELETE {} {}'.format(url, out.status_code))
         if out.status_code != 204:
             raise PermissionDenied('DELETE', url, out.status_code, out.text)
         assert out.content == b'', out.content
@@ -611,65 +701,3 @@ class SwiftContainer:
                 filename=name,
                 strerror='HEAD after PUT {} {}'.format(url, out.status_code))
         assert out.content == b'', out.content
-
-
-class CloudToken:
-    def __init__(self, unscoped_token=None, cloud_config=None, scope=None):
-        if unscoped_token:
-            assert not cloud_config
-            base_url = unscoped_token.base_url
-            post_data = {
-                'auth': {
-                    'identity': {
-                        'methods': ['token'],
-                        'token': {
-                            'id': str(unscoped_token),
-                        },
-                    },
-                },
-            }
-        elif cloud_config:
-            assert not unscoped_token
-            base_url = cloud_config.get_auth_url()
-            post_data = {
-                'auth': {
-                    'identity': {
-                        'methods': ['password'],
-                        'password': cloud_config.as_user_password(),
-                    },
-                },
-            }
-        else:
-            raise TypeError('expect unscoped_token OR cloud_config')
-
-        if scope:
-            post_data['auth']['scope'] = scope
-
-        # Optional "?nocatalog", but then we won't get the catalog,
-        # which we need for project endpoints.
-        url = urljoin(base_url, '/v3/auth/tokens')
-        headers = {}
-        if unscoped_token:
-            headers['X-Auth-Token'] = str(unscoped_token)
-
-        out = requests.post(url, json=post_data, headers=headers)
-        if out.status_code == 401:
-            raise PermissionDenied('POST', url, out.status_code, out.text)
-        try:
-            assert out.status_code == 201
-            out_token = out.headers['X-Subject-Token']
-            out_data = out.json()
-        except (AssertionError, KeyError):
-            # FIXME: auth leak to stdout in case of errors
-            print(out)
-            print(out.headers)
-            print(out.content)
-            raise
-
-        self.base_url = base_url
-        self.data = out_data.pop('token')
-        assert not out_data, out_data
-        self.token = out_token
-
-    def __str__(self):
-        return self.token

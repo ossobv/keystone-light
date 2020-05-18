@@ -22,7 +22,7 @@ Example usage
     from urllib.parse import urljoin
 
     import requests
-    from keystone_light import Cloud, CloudConfig, PermissionDenied
+    from keystone_light import Cloud, CloudsYamlConfig, PermissionDenied
 
 
     def get_projects(cloud):
@@ -108,7 +108,7 @@ Example usage
 
     # Take config from ~/.config/openstack/clouds.yaml and select
     # 'my-cloud-admin', like the openstack(1) --os-cloud option.
-    config = CloudConfig('my-cloud-admin')
+    config = CloudsYamlConfig('my-cloud-admin')
     cloud = Cloud(config)
     for project in get_projects(cloud):
         swift_stat = get_swift_stat_ensuring_permissions(project)
