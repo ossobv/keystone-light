@@ -772,6 +772,9 @@ class ChunkIteratorIOBaseWrapper:
         # Fast: as we get decent sized chunks
         requests.put('https://path/to/somewhere', data=(
             ChunkIteratorIOBaseWrapper(infp))
+
+    See also: wsgiref.util.FileWrapper -- but that one does not forward
+    calls to like fileno() and seek().
     """
     BUFSIZ = 256 * 1024
 
