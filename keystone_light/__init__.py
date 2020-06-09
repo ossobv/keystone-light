@@ -625,6 +625,21 @@ class SwiftContainer:
     def _mkurl(self, *args):
         return self.swift._mkurl(self.name, *args)
 
+    def ensure_exists(self):
+        """
+        Make sure the container exists by creating it if it doesn't.
+
+        Keep in mind that it will be created with "default"
+        properties/metadata.
+        """
+        url, hdrs = self._mkurl(), self.swift._mkhdrs()
+        out = requests.head(url, headers=hdrs)
+        if out.status_code == 404:
+            out = requests.put(url, headers=hdrs)
+            assert out.status_code == 201, out.status_code
+            out = requests.head(url, headers=hdrs)
+            assert out.status_code == 200, out.status_code
+
     def list(self):
         """
         List all files in the container; returns a list of dicts
