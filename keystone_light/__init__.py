@@ -817,7 +817,7 @@ class FuncOpen:
 
     Because reading a HTTP stream takes userland code (we cannot
     simply read() from the socket), we spawn a subprocess to read and
-    write to an anonymous pipe.
+    write to an anonymous pipe. (*)
 
     The other end of the pipe can then be read() as usual.
 
@@ -842,6 +842,9 @@ class FuncOpen:
                 pipe1.returncode, void, err)
 
         print(md5out)  # b'<md5-hash>  -<LF>'
+
+    (*) Why? For chunked transfer, the data is intermixed with chunk
+    headers. For gzipped data, the data also needs decompression.
     """
     def __init__(self, function, stdout=None):
         if stdout is None:
@@ -866,6 +869,9 @@ class FuncOpen:
             if sys.stderr.fileno() is not None:
                 os.dup2(errwrite, sys.stderr.fileno())
             try:
+                # Function is called first after the fork(), so we need
+                # not worry about anyone setting CLOEXEC on its newly
+                # created FDs.
                 with os.fdopen(c2pwrite, 'wb') as dstfp:
                     function(dstfp)
             finally:
