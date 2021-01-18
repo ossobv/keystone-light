@@ -634,11 +634,17 @@ class SwiftContainer:
         """
         url, hdrs = self._mkurl(), self.swift._mkhdrs()
         out = requests.head(url, headers=hdrs)
-        if out.status_code == 404:
+        # 200 = OK, 204 = OK (but has no content)
+        # 201 = created, 202 accepted (will be creating shortly)
+        if out.status_code in (200, 204):
+            pass
+        elif out.status_code == 404:
             out = requests.put(url, headers=hdrs)
-            assert out.status_code == 201, out.status_code
+            assert out.status_code in (201, 202), (url, out.status_code)
             out = requests.head(url, headers=hdrs)
-            assert out.status_code == 200, out.status_code
+            assert out.status_code in (200, 204), (url, out.status_code)
+        else:
+            assert False, (url, out.status_code)
 
     def list(self):
         """
