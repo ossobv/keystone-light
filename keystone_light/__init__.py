@@ -833,7 +833,8 @@ class FuncOpen:
             "Closure, to call container.get(name) and write to dstfp"
             with container.get(name) as response:
                 for chunk in response.iter_content(chunk_size=8192):
-                    dstfp.write(chunk)
+                    if chunk:
+                        dstfp.write(chunk)
 
         # Example that loads data from a Swift container and feeds it to
         # md5sum directly:
@@ -967,7 +968,15 @@ class SwiftContainerGetPipe(FuncPipe):
         # The container data fetch gets to be done in the subprocess.
         def getter(dstfp):
             for chunk in response.iter_content(chunk_size=8192):
-                dstfp.write(chunk)
+                # In the wild, we have seen one case where an apparently empty
+                # write propagated to a process causing the read to be cut
+                # short, aborting the reader. Still not entirely sure what
+                # happened, because we haven't been able to reproduce. But the
+                # addition of this if-condition fixed the problem in both
+                # occurrences: don't write empty data. It may cause someone to
+                # think there is nothing left.
+                if chunk:
+                    dstfp.write(chunk)
 
         super().__init__(function=getter, stdout=stdout)
 
