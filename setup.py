@@ -11,7 +11,7 @@ if __name__ == '__main__':
     #     version = long_descriptions[-1].split(':', 1)[0].split('* ', 1)[1]
     #     assert version.startswith('v'), version
     #     version = version[1:]
-    version = '0.2'
+    version = '1.0'
 
     setup(
         name='keystone-light',
@@ -30,13 +30,12 @@ if __name__ == '__main__':
         license='LGPLv3+',
         platforms=['linux'],
         classifiers=[
-            'Development Status :: 3 - Alpha',
+            'Development Status :: 4 - Beta',
             'Intended Audience :: Developers',
             ('License :: OSI Approved :: GNU Lesser General Public License v3 '
              'or later (LGPLv3+)'),
             'Operating System :: POSIX :: Linux',
-            'Programming Language :: Python :: 3.5',
-            'Programming Language :: Python :: 3.6',
+            'Programming Language :: Python :: 3',
             'Topic :: Software Development :: Libraries',
         ],
         install_requires=[
