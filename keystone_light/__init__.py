@@ -701,7 +701,6 @@ class SwiftContainer:
             raise PermissionDenied('DELETE', url, out.status_code, out.text)
         assert out.content == b'', out.content
 
-    @contextmanager
     def get(self, name):
         """
         GET (read) remote Swift file, returns a requests.Response object
@@ -723,12 +722,8 @@ class SwiftContainer:
                 strerror='GET {} {}'.format(url, out.status_code))
         if out.status_code != 200:
             raise PermissionDenied('GET', url, out.status_code, out.text)
-        try:
-            yield out
-        finally:
-            out.close()
+        return out
 
-    @contextmanager
     def head(self, name):
         """
         HEAD (read) remote Swift file metadata, returns a requests.Response
@@ -743,10 +738,7 @@ class SwiftContainer:
         if out.status_code != 200:
             raise PermissionDenied('GET', url, out.status_code, out.text)
         assert out.content == b'', out.content
-        try:
-            yield out
-        finally:
-            out.close()
+        return out
 
     def put(self, name, fp, content_type='application/octet-stream',
             check_exists_before=True, check_exists_after=True):
