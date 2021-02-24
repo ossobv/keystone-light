@@ -689,7 +689,7 @@ class SwiftContainer:
 
     def delete(self, name):
         """
-        DELETE (remeve) remote Swift file
+        DELETE (remove) remote Swift file
         """
         url, hdrs = self._mkurl(name), self.swift._mkhdrs()
         out = requests.delete(url, headers=hdrs)
@@ -728,7 +728,28 @@ class SwiftContainer:
         finally:
             out.close()
 
-    def put(self, name, fp, content_type='application/octet-stream'):
+    @contextmanager
+    def head(self, name):
+        """
+        HEAD (read) remote Swift file metadata, returns a requests.Response
+        object
+        """
+        url, hdrs = self._mkurl(name), self.swift._mkhdrs()
+        out = requests.head(url, headers=hdrs)
+        if out.status_code == 404:
+            raise SwiftFileNotFoundError(
+                filename=name,
+                strerror='GET {} {}'.format(url, out.status_code))
+        if out.status_code != 200:
+            raise PermissionDenied('GET', url, out.status_code, out.text)
+        assert out.content == b'', out.content
+        try:
+            yield out
+        finally:
+            out.close()
+
+    def put(self, name, fp, content_type='application/octet-stream',
+            check_exists_before=True, check_exists_after=True):
         """
         PUT (write) remote Swift file
 
@@ -741,29 +762,34 @@ class SwiftContainer:
         - HEAD check before PUT (to ensure we do not overwrite), and a
         - HEAD check after PUT (to ensure the file was written).
         This may prove to be more overhead than we want, so this might
-        change in the future.
+        change in the future. You can disable this by setting the
+        `check_exists_*` arguments to False.
         """
         url, hdrs = self._mkurl(name), self.swift._mkhdrs()
         hdrs['Content-Type'] = content_type
 
-        out = requests.head(url, headers=hdrs)
-        if out.status_code != 404:
-            raise SwiftFileExistsError(
-                filename=name,
-                strerror='HEAD before PUT {} {}'.format(url, out.status_code))
-        assert out.content == b'', out.content
+        if check_exists_before:
+            out = requests.head(url, headers=hdrs)
+            if out.status_code != 404:
+                raise SwiftFileExistsError(
+                    filename=name,
+                    strerror='HEAD before PUT {} {}'.format(
+                        url, out.status_code))
+            assert out.content == b'', out.content
 
         out = requests.put(url, headers=hdrs, data=fp)
         if out.status_code != 201:
             raise PermissionDenied('PUT', url, out.status_code, out.text)
         assert out.content == b'', out.content
 
-        out = requests.head(url, headers=hdrs)
-        if out.status_code != 200:
-            raise SwiftFileNotFoundError(
-                filename=name,
-                strerror='HEAD after PUT {} {}'.format(url, out.status_code))
-        assert out.content == b'', out.content
+        if check_exists_after:
+            out = requests.head(url, headers=hdrs)
+            if out.status_code != 200:
+                raise SwiftFileNotFoundError(
+                    filename=name,
+                    strerror='HEAD after PUT {} {}'.format(
+                        url, out.status_code))
+            assert out.content == b'', out.content
 
 
 # ======================================================================
