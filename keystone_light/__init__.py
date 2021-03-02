@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import tempfile
@@ -5,12 +6,16 @@ import warnings
 
 from contextlib import contextmanager
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from itertools import chain
+from subprocess import CalledProcessError
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from yaml import load
 
+log = logging.getLogger('keystone_light')
+log.addHandler(logging.NullHandler())
 
 # ======================================================================
 # OpenStack Keystone
@@ -133,42 +138,52 @@ class DirectConfig:
 
 class CloudToken:
     def __init__(self, unscoped_token=None, cloud_config=None, scope=None):
-        if unscoped_token:
-            assert not cloud_config
-            base_url = unscoped_token.base_url
+        self.unscoped_token = unscoped_token
+        self.cloud_config = cloud_config
+        self.scope = scope
+        self.base_url = None
+        self.data = None
+        self.expires_at = None
+        self.token = None
+        self.renew()
+
+    def renew(self):
+        if self.unscoped_token:
+            assert not self.cloud_config
+            base_url = self.unscoped_token.base_url
             post_data = {
                 'auth': {
                     'identity': {
                         'methods': ['token'],
                         'token': {
-                            'id': str(unscoped_token),
+                            'id': str(self.unscoped_token),
                         },
                     },
                 },
             }
-        elif cloud_config:
-            assert not unscoped_token
-            base_url = cloud_config.get_auth_url()
+        elif self.cloud_config:
+            assert not self.unscoped_token
+            base_url = self.cloud_config.get_auth_url()
             post_data = {
                 'auth': {
                     'identity': {
                         'methods': ['password'],
-                        'password': cloud_config.as_user_password(),
+                        'password': self.cloud_config.as_user_password(),
                     },
                 },
             }
         else:
             raise TypeError('expect unscoped_token OR cloud_config')
 
-        if scope:
-            post_data['auth']['scope'] = scope
+        if self.scope:
+            post_data['auth']['scope'] = self.scope
 
         # Optional "?nocatalog", but then we won't get the catalog,
         # which we need for project endpoints.
         url = urljoin(base_url, '/v3/auth/tokens')
         headers = {}
-        if unscoped_token:
-            headers['X-Auth-Token'] = str(unscoped_token)
+        if self.unscoped_token:
+            headers['X-Auth-Token'] = str(self.unscoped_token)
 
         out = requests.post(url, json=post_data, headers=headers)
         if out.status_code == 401:
@@ -178,18 +193,34 @@ class CloudToken:
             out_token = out.headers['X-Subject-Token']
             out_data = out.json()
         except (AssertionError, KeyError):
-            # FIXME: auth leak to stdout in case of errors
-            print(out)
-            print(out.headers)
-            print(out.content)
+            # FIXME: auth leak to logging in case of errors.
+            log.debug(out)
+            log.debug(out.headers)
+            log.debug(out.content)
             raise
 
         self.base_url = base_url
         self.data = out_data.pop('token')
+        expires_at = self.data.get('expires_at')
+        if expires_at is not None:
+            if expires_at.endswith('Z'):
+                expires_at = expires_at[:-1] + '+00:00'
+            expires_at = datetime.fromisoformat(expires_at)
+        self.expires_at = expires_at
         assert not out_data, out_data
         self.token = out_token
 
+    def will_expire_within(self, **kwargs):
+        if self.expires_at is not None:
+            utcnow = datetime.now(timezone.utc)
+            if utcnow + timedelta(**kwargs) > self.expires_at:
+                return True
+        return False
+
     def __str__(self):
+        if self.will_expire_within(minutes=2):
+            log.debug('token will expire at %s, force renew', self.expires_at)
+            self.renew()
         return self.token
 
 
@@ -956,8 +987,7 @@ class FuncPipe(FuncOpen):
         out, err = super().communicate()
         assert out in (b'', None), out
         if self.returncode != 0:
-            from subprocess import CalledProcessError
-            print('(stderr)', err.decode('ascii', 'replace'), file=sys.stderr)
+            log.debug('(stderr) %s', err.decode('ascii', 'replace'))
             raise CalledProcessError(
                 cmd='{} (FuncPipe child)'.format(sys.argv[0]), output=err,
                 returncode=self.returncode)
