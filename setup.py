@@ -11,7 +11,7 @@ if __name__ == '__main__':
     #     version = long_descriptions[-1].split(':', 1)[0].split('* ', 1)[1]
     #     assert version.startswith('v'), version
     #     version = version[1:]
-    version = '1.2'
+    version = '1.3'
 
     setup(
         name='keystone-light',
