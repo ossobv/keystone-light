@@ -12,7 +12,7 @@ from subprocess import CalledProcessError
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
-from yaml import load
+from yaml import SafeLoader, load
 
 log = logging.getLogger('keystone_light')
 log.addHandler(logging.NullHandler())
@@ -70,7 +70,7 @@ class CloudsYamlConfig:
     """
     def __init__(self, os_cloud):
         with open(os.path.expanduser('~/.config/openstack/clouds.yaml')) as fp:
-            clouds_yaml = load(fp.read())
+            clouds_yaml = load(fp.read(), Loader=SafeLoader)
 
         self.user_info = clouds_yaml['clouds'][os_cloud]
         assert self.user_info['identity_api_version'] == 3, self.user_info
